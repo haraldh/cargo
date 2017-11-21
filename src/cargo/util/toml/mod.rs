@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::str;
@@ -165,6 +166,41 @@ and this will become a hard error in the future.",
 
     let first_error = anyhow::Error::from(first_error);
     Err(first_error.context("could not parse input as TOML"))
+}
+
+#[derive(Deserialize)]
+struct SourceManifest {
+    package: Option<SourcePackage>,
+    project: Option<SourcePackage>,
+}
+
+#[derive(Deserialize)]
+struct SourcePackage {
+    publish: Option<VecStringOrBool>,
+}
+
+/// Check if the manifest file (if exists) has package.publish=true
+///
+/// We do not validate the manifest here to avoid dealing with recursion.
+pub fn is_remote_source(manifest_path: &Path) -> bool {
+    use ::std::io::Read;
+
+    if let Ok(mut file) = fs::File::open(manifest_path) {
+        let mut content = String::new();
+        if file.read_to_string(&mut content).is_ok() {
+            if let Ok(config) = toml::from_str::<SourceManifest>(&content) {
+                let pkg = config.package.or(config.project);
+                if let Some(pkg) = pkg {
+                    return match pkg.publish {
+                        Some(VecStringOrBool::VecString(ref registries)) => !registries.is_empty(),
+                        Some(VecStringOrBool::Bool(false)) => false,
+                        Some(VecStringOrBool::Bool(true)) | None => true,
+                    };
+                }
+            }
+        }
+    }
+    false
 }
 
 type TomlLibTarget = TomlTarget;
@@ -820,7 +856,7 @@ pub struct TomlProject {
     resolver: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct TomlWorkspace {
     members: Option<Vec<String>>,
     #[serde(rename = "default-members")]
@@ -901,13 +937,14 @@ impl TomlManifest {
             example: self.example.clone(),
             test: self.test.clone(),
             bench: self.bench.clone(),
-            dependencies: map_deps(config, self.dependencies.as_ref(), all)?,
+            dependencies: map_deps(config, self.dependencies.as_ref(), all, package_root)?,
             dev_dependencies: map_deps(
                 config,
                 self.dev_dependencies
                     .as_ref()
                     .or_else(|| self.dev_dependencies2.as_ref()),
                 TomlDependency::is_version_specified,
+                package_root,
             )?,
             dev_dependencies2: None,
             build_dependencies: map_deps(
@@ -916,6 +953,7 @@ impl TomlManifest {
                     .as_ref()
                     .or_else(|| self.build_dependencies2.as_ref()),
                 all,
+                package_root,
             )?,
             build_dependencies2: None,
             features: self.features.clone(),
@@ -926,13 +964,19 @@ impl TomlManifest {
                         Ok((
                             k.clone(),
                             TomlPlatform {
-                                dependencies: map_deps(config, v.dependencies.as_ref(), all)?,
+                                dependencies: map_deps(
+                                    config,
+                                    v.dependencies.as_ref(),
+                                    all,
+                                    package_root,
+                                )?,
                                 dev_dependencies: map_deps(
                                     config,
                                     v.dev_dependencies
                                         .as_ref()
                                         .or_else(|| v.dev_dependencies2.as_ref()),
                                     TomlDependency::is_version_specified,
+                                    package_root,
                                 )?,
                                 dev_dependencies2: None,
                                 build_dependencies: map_deps(
@@ -941,6 +985,7 @@ impl TomlManifest {
                                         .as_ref()
                                         .or_else(|| v.build_dependencies2.as_ref()),
                                     all,
+                                    package_root,
                                 )?,
                                 build_dependencies2: None,
                             },
@@ -954,7 +999,7 @@ impl TomlManifest {
             },
             replace: None,
             patch: None,
-            workspace: None,
+            workspace: self.workspace.clone(),
             badges: self.badges.clone(),
             cargo_features,
         });
@@ -963,6 +1008,7 @@ impl TomlManifest {
             config: &Config,
             deps: Option<&BTreeMap<String, TomlDependency>>,
             filter: impl Fn(&TomlDependency) -> bool,
+            root: &Path,
         ) -> CargoResult<Option<BTreeMap<String, TomlDependency>>> {
             let deps = match deps {
                 Some(deps) => deps,
@@ -971,28 +1017,40 @@ impl TomlManifest {
             let deps = deps
                 .iter()
                 .filter(|(_k, v)| filter(v))
-                .map(|(k, v)| Ok((k.clone(), map_dependency(config, v)?)))
+                .map(|(k, v)| Ok((k.clone(), map_dependency(config, v, root)?)))
                 .collect::<CargoResult<BTreeMap<_, _>>>()?;
             Ok(Some(deps))
         }
 
-        fn map_dependency(config: &Config, dep: &TomlDependency) -> CargoResult<TomlDependency> {
+        fn map_dependency(
+            config: &Config,
+            dep: &TomlDependency,
+            root: &Path,
+        ) -> CargoResult<TomlDependency> {
             match dep {
                 TomlDependency::Detailed(d) => {
-                    let mut d = d.clone();
-                    // Path dependencies become crates.io deps.
-                    d.path.take();
-                    // Same with git dependencies.
-                    d.git.take();
-                    d.branch.take();
-                    d.tag.take();
-                    d.rev.take();
-                    // registry specifications are elaborated to the index URL
-                    if let Some(registry) = d.registry.take() {
-                        let src = SourceId::alt_registry(config, &registry)?;
-                        d.registry_index = Some(src.url().to_string());
+                    let mut nd = d.clone();
+                    if let Some(ref path) = d.path {
+                        let path = root.join(PathBuf::from(path));
+                        if is_remote_source(&path.join("Cargo.toml")) {
+                            // if package is allowed to be published,
+                            // then path dependency will become crates.io deps
+                            // Path dependencies become crates.io deps.
+                            nd.path.take();
+                        }
                     }
-                    Ok(TomlDependency::Detailed(d))
+
+                    // Same with git dependencies.
+                    nd.git.take();
+                    nd.branch.take();
+                    nd.tag.take();
+                    nd.rev.take();
+                    // registry specifications are elaborated to the index URL
+                    if let Some(registry) = nd.registry.take() {
+                        let src = SourceId::alt_registry(config, &registry)?;
+                        nd.registry_index = Some(src.url().to_string());
+                    }
+                    Ok(TomlDependency::Detailed(nd))
                 }
                 TomlDependency::Simple(s) => Ok(TomlDependency::Detailed(DetailedTomlDependency {
                     version: Some(s.clone()),

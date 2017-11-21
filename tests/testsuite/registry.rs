@@ -334,7 +334,7 @@ required by package `foo v0.0.1 ([..])`
 }
 
 #[cargo_test]
-fn package_with_path_deps() {
+fn package_with_publishable_path_deps() {
     Package::new("init", "0.0.1").publish();
 
     let p = project()
@@ -386,6 +386,55 @@ Caused by:
 [DOWNLOADING] crates ...
 [DOWNLOADED] notyet v0.0.1 (registry `[ROOT][..]`)
 [COMPILING] notyet v0.0.1
+[COMPILING] foo v0.0.1 ([CWD][..])
+[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]s
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn package_with_unpublishable_path_deps() {
+    Package::new("init", "0.0.1").publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [project]
+            name = "foo"
+            version = "0.0.1"
+            authors = []
+            license = "MIT"
+            description = "foo"
+            repository = "bar"
+
+            [dependencies.notyet]
+            version = "0.0.1"
+            path = "notyet"
+        "#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .file(
+            "notyet/Cargo.toml",
+            r#"
+            [package]
+            publish = false
+            name = "notyet"
+            version = "0.0.1"
+            authors = []
+        "#,
+        )
+        .file("notyet/src/lib.rs", "")
+        .build();
+
+    p.cargo("package")
+        .with_status(0)
+        .with_stderr_contains(
+            "\
+[PACKAGING] foo v0.0.1 ([CWD])
+[VERIFYING] foo v0.0.1 ([CWD])
+[COMPILING] notyet v0.0.1 ([CWD][..])
 [COMPILING] foo v0.0.1 ([CWD][..])
 [FINISHED] dev [unoptimized + debuginfo] target(s) in [..]s
 ",

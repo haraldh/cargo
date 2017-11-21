@@ -330,6 +330,91 @@ the `path` specification will be removed from the dependency declaration.
 }
 
 #[cargo_test]
+fn with_path_dependencies() {
+    registry::init();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [project]
+            name = "foo"
+            version = "0.0.1"
+            authors = []
+            license = "MIT"
+            description = "foo"
+
+            [dependencies.bar]
+            path = "bar"
+            version = "*"
+
+            [workspace]
+            members = ["bar"]
+        "#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .file(
+            "bar/Cargo.toml",
+            r#"
+            [package]
+            publish = false
+            name = "bar"
+            version = "0.1.0"
+            authors = []
+        "#,
+        )
+        .file("bar/src/lib.rs", "")
+        .build();
+
+    p.cargo("publish --token sekrit").run();
+
+    publish::validate_upload(
+        r#"
+        {
+          "authors": [],
+          "badges": {},
+          "categories": [],
+          "deps": [
+            {
+              "default_features": true,
+              "features": [],
+              "kind": "normal",
+              "name": "bar",
+              "optional": false,
+              "registry": "https://github.com/rust-lang/crates.io-index",
+              "target": null,
+              "version_req": "*"
+            }
+          ],
+          "description": "foo",
+          "documentation": null,
+          "features": {},
+          "homepage": null,
+          "keywords": [],
+          "license": "MIT",
+          "license_file": null,
+          "links": null,
+          "name": "foo",
+          "readme": null,
+          "readme_file": null,
+          "repository": null,
+          "vers": "0.0.1"
+          }
+        "#,
+        "foo-0.0.1.crate",
+        &[
+            "Cargo.lock",
+            "Cargo.toml",
+            "Cargo.toml.orig",
+            "src/main.rs",
+            "bar/Cargo.toml.orig",
+            "bar/src/lib.rs",
+            "bar/Cargo.toml",
+        ],
+    );
+}
+
+#[cargo_test]
 fn unpublishable_crate() {
     registry::init();
 

@@ -574,7 +574,89 @@ src/main.rs
 }
 
 #[cargo_test]
-fn ignore_nested() {
+fn exclude_publishable_path_deps() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [project]
+            name = "foo"
+            version = "0.0.1"
+            authors = []
+            [dependencies]
+            bar = { path = "bar", version = "0.1" }
+        "#,
+        )
+        .file("src/main.rs", "")
+        .file(
+            "bar/Cargo.toml",
+            r#"
+            [package]
+            name = "bar"
+            version = "0.1.0"
+            authors = []
+        "#,
+        )
+        .file("bar/src/lib.rs", "")
+        .build();
+
+    p.cargo("package --list")
+        .with_stdout(
+            "\
+Cargo.lock
+Cargo.toml
+Cargo.toml.orig
+src/main.rs
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn include_unpublishable_path_deps() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [project]
+            name = "foo"
+            version = "0.0.1"
+            authors = []
+            [dependencies]
+            bar = { path = "bar", version = "0.1" }
+        "#,
+        )
+        .file("src/main.rs", "")
+        .file(
+            "bar/Cargo.toml",
+            r#"
+            [package]
+            publish = false
+            name = "bar"
+            version = "0.1.0"
+            authors = []
+        "#,
+        )
+        .file("bar/src/lib.rs", "")
+        .build();
+
+    p.cargo("package --list")
+        .with_stdout(
+            "\
+Cargo.lock
+Cargo.toml
+Cargo.toml.orig
+bar/Cargo.toml
+bar/Cargo.toml.orig
+bar/src/lib.rs
+src/main.rs
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn keep_nested() {
     let cargo_toml = r#"
             [project]
             name = "foo"
@@ -877,6 +959,8 @@ registry-index = "{}"
 
 [dependencies.ghi]
 version = "1.0"
+
+[workspace]
 "#,
         cargo::core::package::MANIFEST_PREAMBLE,
         registry::alt_registry_url()
@@ -891,7 +975,7 @@ version = "1.0"
 }
 
 #[cargo_test]
-fn ignore_workspace_specifier() {
+fn keep_workspace_specifier() {
     let p = project()
         .file(
             "Cargo.toml",
