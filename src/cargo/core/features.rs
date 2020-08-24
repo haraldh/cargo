@@ -217,6 +217,9 @@ features! {
 
         // Allow to specify whether binaries should be stripped.
         [unstable] strip: bool,
+
+        // Allow internal non-public crates.
+        [unstable] internal_crates: bool,
     }
 }
 

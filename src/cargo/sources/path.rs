@@ -158,15 +158,48 @@ impl<'cfg> PathSource<'cfg> {
             ignore_should_package(relative_path, is_dir)
         };
 
+        let internal_deps = pkg.collect_internal_crate_deps(self.config, pkg.root());
+        // include files of the internal packages (only subdirectories)
+        let internal_packages = internal_deps
+            .iter()
+            .filter(|dep| dep.is_internal())
+            .map(|dep| dep.source_id())
+            .filter_map(|src| src.url().to_file_path().ok())
+            .filter(|path| path.starts_with(pkg.root()))
+            .map(|path| path.join("Cargo.toml"))
+            .filter_map(|path| {
+                if let Ok((pkg, _)) = ops::read_package(&path, self.source_id, self.config) {
+                    Some((path, pkg))
+                } else {
+                    None
+                }
+            })
+            .filter_map(|(path, pkg)| {
+                PathSource::new(&path, self.source_id, self.config)
+                    .list_files(&pkg)
+                    .ok()
+            })
+            .flatten();
+
         // Attempt Git-prepopulate only if no `include` (see rust-lang/cargo#4135).
         if no_include_option {
-            if let Some(result) = self.discover_git_and_list_files(pkg, root, &mut filter)? {
+            if let Some(mut result) = self.discover_git_and_list_files(pkg, root, &mut filter)? {
+                result.extend(internal_packages);
                 return Ok(result);
             }
             // no include option and not git repo discovered (see rust-lang/cargo#7183).
-            return self.list_files_walk_except_dot_files_and_dirs(pkg, &mut filter);
+            return self
+                .list_files_walk_except_dot_files_and_dirs(pkg, &mut filter)
+                .map(|mut files| {
+                    files.extend(internal_packages);
+                    files
+                });
         }
-        self.list_files_walk(pkg, &mut filter)
+
+        self.list_files_walk(pkg, &mut filter).map(|mut files| {
+            files.extend(internal_packages);
+            files
+        })
     }
 
     // Returns `Some(_)` if found sibling `Cargo.toml` and `.git` directory;

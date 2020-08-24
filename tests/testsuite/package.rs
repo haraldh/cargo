@@ -574,6 +574,126 @@ src/main.rs
 }
 
 #[cargo_test]
+fn exclude_publishable_path_deps() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [project]
+            name = "foo"
+            version = "0.0.1"
+            authors = []
+            [dependencies]
+            bar = { path = "bar", version = "0.1" }
+        "#,
+        )
+        .file("src/main.rs", "")
+        .file(
+            "bar/Cargo.toml",
+            r#"
+            [package]
+            name = "bar"
+            version = "0.1.0"
+            authors = []
+        "#,
+        )
+        .file("bar/src/lib.rs", "")
+        .build();
+
+    p.cargo("package --list")
+        .with_stdout(
+            "\
+Cargo.lock
+Cargo.toml
+Cargo.toml.orig
+src/main.rs
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn include_internal_crates() {
+    use cargo_test_support::is_nightly;
+    if !is_nightly() {
+        // internal_crates are unstable
+        return;
+    }
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            cargo-features = [ "internal-crates" ]
+
+            [project]
+            name = "foo"
+            version = "0.0.1"
+            authors = []
+            license = "MIT"
+            description = "foo"
+
+            [dependencies.bar]
+            path = "bar"
+            version = "*"
+            internal = true
+
+            [workspace]
+            members = ["bar"]
+        "#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .file(
+            "bar/Cargo.toml",
+            r#"
+            cargo-features = [ "internal-crates" ]
+
+            [package]
+            publish = false
+            name = "bar"
+            version = "0.1.0"
+            authors = []
+
+            [dependencies.baz]
+            path = "../baz"
+            version = "*"
+            internal = true
+        "#,
+        )
+        .file("bar/src/lib.rs", "")
+        .file(
+            "baz/Cargo.toml",
+            r#"
+            [package]
+            publish = false
+            name = "baz"
+            version = "0.1.0"
+            authors = []
+        "#,
+        )
+        .file("baz/src/lib.rs", "")
+        .build();
+
+    p.cargo("package --list")
+        .masquerade_as_nightly_cargo()
+        //.env("CARGO_LOG", "debug")
+        .with_stdout(
+            "\
+Cargo.lock
+Cargo.toml
+Cargo.toml.orig
+bar/Cargo.toml
+bar/Cargo.toml.orig
+bar/src/lib.rs
+baz/Cargo.toml
+baz/Cargo.toml.orig
+baz/src/lib.rs
+src/main.rs
+",
+        )
+        .run();
+}
+
+#[cargo_test]
 fn ignore_nested() {
     let cargo_toml = r#"
             [project]

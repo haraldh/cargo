@@ -241,6 +241,7 @@ pub struct DetailedTomlDependency {
     default_features2: Option<bool>,
     package: Option<String>,
     public: Option<bool>,
+    internal: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -981,17 +982,22 @@ impl TomlManifest {
                 TomlDependency::Detailed(d) => {
                     let mut d = d.clone();
                     // Path dependencies become crates.io deps.
-                    d.path.take();
+                    if d.internal.unwrap_or(false) {
+                        d.registry.take();
+                        d.registry_index.take();
+                    } else {
+                        d.path.take();
+                        // registry specifications are elaborated to the index URL
+                        if let Some(registry) = d.registry.take() {
+                            let src = SourceId::alt_registry(config, &registry)?;
+                            d.registry_index = Some(src.url().to_string());
+                        }
+                    }
                     // Same with git dependencies.
                     d.git.take();
                     d.branch.take();
                     d.tag.take();
                     d.rev.take();
-                    // registry specifications are elaborated to the index URL
-                    if let Some(registry) = d.registry.take() {
-                        let src = SourceId::alt_registry(config, &registry)?;
-                        d.registry_index = Some(src.url().to_string());
-                    }
                     Ok(TomlDependency::Detailed(d))
                 }
                 TomlDependency::Simple(s) => Ok(TomlDependency::Detailed(DetailedTomlDependency {
@@ -1776,6 +1782,17 @@ impl DetailedTomlDependency {
 
             dep.set_public(p);
         }
+
+        if let Some(p) = self.internal {
+            cx.features.require(Feature::internal_crates())?;
+            if p {
+                if self.public.unwrap_or(false) {
+                    bail!("`public` and `internal` can't be set to `true` at the same time.")
+                }
+            }
+            dep.set_internal(p);
+        }
+
         Ok(dep)
     }
 }

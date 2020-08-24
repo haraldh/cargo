@@ -330,6 +330,178 @@ the `path` specification will be removed from the dependency declaration.
 }
 
 #[cargo_test]
+fn with_path_dependencies() {
+    use cargo_test_support::is_nightly;
+    if !is_nightly() {
+        // internal_crates are unstable
+        return;
+    }
+    registry::init();
+
+    Package::new("dep1", "1.0.1")
+        .file("src/lib.rs", "pub fn f() -> i32 {1}")
+        .publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            cargo-features = [ "internal-crates" ]
+
+            [project]
+            name = "foo"
+            version = "0.0.1"
+            authors = []
+            license = "MIT"
+            description = "foo"
+
+            [build-dependencies.bar]
+            path = "bar"
+            version = "*"
+            internal = true
+
+            [workspace]
+            members = ["bar"]
+        "#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .file(
+            "bar/Cargo.toml",
+            r#"
+            cargo-features = [ "internal-crates" ]
+
+            [package]
+            publish = false
+            name = "bar"
+            version = "0.1.0"
+            authors = []
+
+            [dependencies.baz]
+            path = "../baz"
+            version = "*"
+            internal = true
+        "#,
+        )
+        .file("bar/src/main.rs", "fn main() {}")
+        .file(
+            "baz/Cargo.toml",
+            r#"
+            [package]
+            publish = false
+            name = "baz"
+            version = "0.1.0"
+            authors = []
+
+            [dependencies]
+            dep1 = { version = "1.0" }
+        "#,
+        )
+        .file("baz/src/lib.rs", "")
+        .build();
+
+    p.cargo("publish --token sekrit")
+        .masquerade_as_nightly_cargo()
+        //.with_stderr_contains("rgdfrgf")
+        //.env("CARGO_LOG", "debug")
+        .run();
+
+    publish::validate_upload_with_contents(
+        r#"
+        {
+          "authors": [],
+          "badges": {},
+          "categories": [],
+          "deps": [
+            {
+              "default_features": true,
+              "features": [],
+              "kind": "normal",
+              "name": "dep1",
+              "optional": false,
+              "registry": "https://github.com/rust-lang/crates.io-index",
+              "target": null,
+              "version_req": "^1.0"
+            }
+          ],
+          "description": "foo",
+          "documentation": null,
+          "features": {},
+          "homepage": null,
+          "keywords": [],
+          "license": "MIT",
+          "license_file": null,
+          "links": null,
+          "name": "foo",
+          "readme": null,
+          "readme_file": null,
+          "repository": null,
+          "vers": "0.0.1"
+          }
+        "#,
+        "foo-0.0.1.crate",
+        &[
+            "Cargo.lock",
+            "Cargo.toml",
+            "Cargo.toml.orig",
+            "src/main.rs",
+            "bar/Cargo.toml.orig",
+            "bar/src/main.rs",
+            "bar/Cargo.toml",
+            "bar/Cargo.lock",
+            "baz/Cargo.toml.orig",
+            "baz/src/lib.rs",
+            "baz/Cargo.toml",
+        ],
+        &[
+            (
+                "Cargo.toml",
+                "[..]\n\
+                 [build-dependencies.bar]\n\
+                 version = \"*\"\n\
+                 path = \"bar\"\n\
+                 internal = true\n\
+                 ",
+            ),
+            (
+                "bar/Cargo.toml",
+                "[..]\n\
+                 [dependencies.baz]\n\
+                 version = \"*\"\n\
+                 path = \"../baz\"\n\
+                 internal = true\n\
+                 ",
+            ),
+            (
+                "baz/Cargo.toml",
+                "[..]\n\
+                 [dependencies.dep1]\n\
+                 version = \"1.0\"\n\
+                 ",
+            ),
+            (
+                "bar/Cargo.lock",
+                "\
+                 [..]\n\
+                 [[package]]\n\
+                 name = \"bar\"\n\
+                 version = \"0.1.0\"\n\
+                 dependencies = [\n\
+                 \x20\"baz\",\n\
+                 ]\n\
+                 [..]\n\
+                 [[package]]\n\
+                 name = \"baz\"\n\
+                 version = \"0.1.0\"\n\
+                 dependencies = [\n\
+                 \x20\"dep1\",\n\
+                 ]\n\
+                 [..]",
+            ),
+        ],
+    );
+}
+
+#[cargo_test]
 fn unpublishable_crate() {
     registry::init();
 

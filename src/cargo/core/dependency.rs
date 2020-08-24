@@ -38,6 +38,7 @@ struct Inner {
 
     optional: bool,
     public: bool,
+    internal: bool,
     default_features: bool,
     features: Vec<InternedString>,
 
@@ -212,6 +213,7 @@ impl Dependency {
                 only_match_name: true,
                 optional: false,
                 public: false,
+                internal: false,
                 features: Vec::new(),
                 default_features: true,
                 specified_req: false,
@@ -299,6 +301,16 @@ impl Dependency {
             assert_eq!(self.kind(), DepKind::Normal);
         }
         Rc::make_mut(&mut self.inner).public = public;
+        self
+    }
+
+    pub fn is_internal(&self) -> bool {
+        self.inner.internal
+    }
+
+    /// Sets whether the dependency is internal.
+    pub fn set_internal(&mut self, internal: bool) -> &mut Dependency {
+        Rc::make_mut(&mut self.inner).internal = internal;
         self
     }
 

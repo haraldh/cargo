@@ -194,11 +194,12 @@ fn transmit(
     dry_run: bool,
 ) -> CargoResult<()> {
     let deps = pkg
-        .dependencies()
+        .collect_internal_crate_deps(config, pkg.root())
         .iter()
         .filter(|dep| {
             // Skip dev-dependency without version.
-            dep.is_transitive() || dep.specified_req()
+            // Skip internal crates.
+            !dep.is_internal() && (dep.is_transitive() || dep.specified_req())
         })
         .map(|dep| {
             // If the dependency is from a different registry, then include the
@@ -233,6 +234,7 @@ fn transmit(
             })
         })
         .collect::<CargoResult<Vec<NewCrateDependency>>>()?;
+
     let manifest = pkg.manifest();
     let ManifestMetadata {
         ref authors,

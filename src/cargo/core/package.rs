@@ -249,6 +249,38 @@ impl Package {
     pub fn include_lockfile(&self) -> bool {
         self.targets().iter().any(|t| t.is_example() || t.is_bin())
     }
+
+    pub fn collect_internal_crate_deps(
+        &self,
+        config: &Config,
+        root_path: &Path,
+    ) -> Vec<Dependency> {
+        let mut deps = Vec::from(self.dependencies());
+
+        let internal_packages = self
+            .dependencies()
+            .iter()
+            .filter(|dep| dep.is_internal())
+            .map(|dep| dep.source_id())
+            .filter_map(|dep| dep.url().to_file_path().ok())
+            .filter(|path| path.starts_with(root_path))
+            .map(|path| path.join("Cargo.toml"))
+            .filter_map(|path| {
+                if let Ok((pkg, _)) =
+                    ops::read_package(&path, self.package_id().source_id(), config)
+                {
+                    Some(pkg)
+                } else {
+                    None
+                }
+            });
+
+        for p in internal_packages {
+            deps.extend(p.collect_internal_crate_deps(config, root_path));
+        }
+
+        deps
+    }
 }
 
 impl fmt::Display for Package {

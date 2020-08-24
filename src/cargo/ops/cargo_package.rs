@@ -15,12 +15,14 @@ use tar::{Archive, Builder, EntryType, Header};
 use crate::core::compiler::{BuildConfig, CompileMode, DefaultExecutor, Executor};
 use crate::core::{Feature, Shell, Verbosity, Workspace};
 use crate::core::{Package, PackageId, PackageSet, Resolve, Source, SourceId};
+use crate::ops::read_package;
 use crate::sources::PathSource;
 use crate::util::errors::{CargoResult, CargoResultExt};
 use crate::util::paths;
 use crate::util::toml::TomlManifest;
 use crate::util::{self, restricted_names, Config, FileLock};
 use crate::{drop_println, ops};
+use same_file::is_same_file;
 
 pub struct PackageOpts<'cfg> {
     pub config: &'cfg Config,
@@ -56,7 +58,7 @@ enum FileContents {
 
 enum GeneratedFile {
     /// Generates `Cargo.toml` by rewriting the original.
-    Manifest,
+    Manifest(Package),
     /// Generates `Cargo.lock` in some cases (like if there is a binary).
     Lockfile,
     /// Adds a `.cargo-vcs_info.json` file if in a (clean) git repo.
@@ -149,6 +151,7 @@ fn build_ar_list(
 ) -> CargoResult<Vec<ArchiveFile>> {
     let mut result = Vec::new();
     let root = pkg.root();
+    let manifest_path = pkg.manifest_path();
     for src_file in src_files {
         let rel_path = src_file.strip_prefix(&root)?.to_path_buf();
         check_filename(&rel_path, &mut ws.config().shell())?;
@@ -158,18 +161,57 @@ fn build_ar_list(
                 anyhow::format_err!("non-utf8 path in source directory: {}", rel_path.display())
             })?
             .to_string();
-        match rel_str.as_ref() {
+
+        let rel_filename = rel_path
+            .file_name()
+            .unwrap()
+            .to_str()
+            .ok_or_else(|| {
+                anyhow::format_err!("non-utf8 path in source directory: {}", rel_path.display())
+            })?
+            .to_string();
+
+        match rel_filename.as_ref() {
             "Cargo.toml" => {
-                result.push(ArchiveFile {
-                    rel_path: PathBuf::from("Cargo.toml.orig"),
-                    rel_str: "Cargo.toml.orig".to_string(),
-                    contents: FileContents::OnDisk(src_file),
-                });
-                result.push(ArchiveFile {
-                    rel_path,
-                    rel_str,
-                    contents: FileContents::Generated(GeneratedFile::Manifest),
-                });
+                if is_same_file(&src_file, manifest_path)? {
+                    result.push(ArchiveFile {
+                        rel_path: PathBuf::from("Cargo.toml.orig"),
+                        rel_str: "Cargo.toml.orig".to_string(),
+                        contents: FileContents::OnDisk(src_file),
+                    });
+                    result.push(ArchiveFile {
+                        rel_path,
+                        rel_str,
+                        contents: FileContents::Generated(GeneratedFile::Manifest(pkg.clone())),
+                    });
+                } else {
+                    let (new_pkg, _nested) = read_package(
+                        &src_file,
+                        SourceId::for_path(&rel_path.parent().unwrap().canonicalize().unwrap())?,
+                        ws.config(),
+                    )?;
+
+                    if new_pkg.include_lockfile() {
+                        let lock_path = rel_path.parent().unwrap().join("Cargo.lock");
+                        result.push(ArchiveFile {
+                            rel_path: lock_path.clone(),
+                            rel_str: lock_path.into_os_string().into_string().unwrap(),
+                            contents: FileContents::Generated(GeneratedFile::Lockfile),
+                        });
+                    }
+
+                    let orig_path_str = rel_str.clone() + ".orig";
+                    result.push(ArchiveFile {
+                        rel_path: PathBuf::from(&orig_path_str),
+                        rel_str: orig_path_str,
+                        contents: FileContents::OnDisk(src_file),
+                    });
+                    result.push(ArchiveFile {
+                        rel_path,
+                        rel_str,
+                        contents: FileContents::Generated(GeneratedFile::Manifest(new_pkg)),
+                    });
+                }
             }
             "Cargo.lock" => continue,
             VCS_INFO_FILE => anyhow::bail!(
@@ -519,7 +561,7 @@ fn tar(
             }
             FileContents::Generated(generated_kind) => {
                 let contents = match generated_kind {
-                    GeneratedFile::Manifest => pkg.to_registry_toml(ws)?,
+                    GeneratedFile::Manifest(ref pkg) => pkg.to_registry_toml(ws)?,
                     GeneratedFile::Lockfile => build_lock(ws)?,
                     GeneratedFile::VcsInfo(s) => s,
                 };
